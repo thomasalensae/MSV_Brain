@@ -1,0 +1,33 @@
+import utils.import_dataset as dataset
+import bert_embeddings
+import utils.config as config
+import results
+from sparse_dictionary import fit_sdl
+
+print("Starting ...")
+
+# Parameters
+n_components=512
+n_nonzero=20
+layer = 6
+
+# Load dataset
+df, X = dataset.load()
+
+# BERT embeddings
+Y_layers = bert_embeddings.compute_embeddings(df, config.cfg)
+Y_layer = Y_layers[layer]
+
+# Fit SDL and probe features
+fit_sdl(Y_layer, X, n_components=n_components, n_nonzero=n_nonzero, layer = layer)
+
+# Plot results
+results.summarize_feature_probing("sentence_CLAUSE_objwho", log_path=f"cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
+results.plot_atom_importance("sentence_CLAUSE_objwho", log_path=f"cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
+
+top_examples = results.get_top_stimuli_for_atoms(df, n_components=n_components, n_nonzero=n_nonzero, layer = layer, atom_indices=[417, 472])
+
+results.plot_selectivity_matrix(f"cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
+
+
+print("Done.")

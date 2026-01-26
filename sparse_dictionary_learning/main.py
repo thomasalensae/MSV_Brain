@@ -9,25 +9,28 @@ print("Starting ...")
 # Parameters
 n_components=512
 n_nonzero=20
-layer = 6
 
-# Load dataset
-df, X = dataset.load()
+for layer in [0,1,2,3,4,5,6,7,8,9,10,11]:
+    print("Processing layer:", layer)
+    # Load dataset
+    df, X = dataset.load()
 
-# BERT embeddings
-Y_layers = bert_embeddings.compute_embeddings(df, config.cfg)
-Y_layer = Y_layers[layer]
+    # BERT embeddings
+    Y_layers = bert_embeddings.compute_embeddings(df, config.cfg)
+    Y_layer = Y_layers[layer]
 
-# Fit SDL and probe features
-fit_sdl(Y_layer, X, n_components=n_components, n_nonzero=n_nonzero, layer = layer)
+    # Fit SDL and probe features
+    fit_sdl(Y_layer, X, n_components=n_components, n_nonzero=n_nonzero, layer = layer)
 
-# Plot results
-results.summarize_feature_probing("sentence_CLAUSE_objwho", log_path=f"cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
-results.plot_atom_importance("sentence_CLAUSE_objwho", log_path=f"cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
+    # Plot results
+    #results.summarize_feature_probing("sentence_CLAUSE_objwho", log_path=f"sparse_dictionary_learning/cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
+    #results.plot_atom_importance("sentence_CLAUSE_objwho", log_path=f"sparse_dictionary_learning/cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
+    #top_examples = results.get_top_stimuli_for_atoms(df, n_components=n_components, n_nonzero=n_nonzero, layer = layer, atom_indices=[417, 472])
 
-top_examples = results.get_top_stimuli_for_atoms(df, n_components=n_components, n_nonzero=n_nonzero, layer = layer, atom_indices=[417, 472])
+    results.plot_selectivity_matrix(f"sparse_dictionary_learning/cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl", n_components=n_components, n_nonzero=n_nonzero, layer = layer)
 
-results.plot_selectivity_matrix(f"cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
+    # Criteria of identifiability
 
+    results.plot_identifiability_distribution(log_path=f"sparse_dictionary_learning/cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl", n_components=n_components, n_nonzero=n_nonzero, layer = layer)
 
 print("Done.")

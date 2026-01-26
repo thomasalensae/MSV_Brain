@@ -18,21 +18,18 @@ import os
 
 def setup_custom_logger(log_file="experiment_log.jsonl"):
     logger = logging.getLogger("LinguisticProbing")
-    # Éviter les doublons si la fonction est appelée plusieurs fois
-    if not logger.handlers:
-        logger.setLevel(logging.INFO)
-        handler = logging.FileHandler(log_file)
-        # Format minimaliste car on convertit tout en JSON
-        handler.setFormatter(logging.Formatter('%(message)s'))
-        logger.addHandler(handler)
+    #if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    handler = logging.FileHandler(log_file)
+    # Format minimaliste car on convertit tout en JSON
+    handler.setFormatter(logging.Formatter('%(message)s'))
+    logger.addHandler(handler)
     return logger
-
-
 
 def fit_sdl(Y_layer, X, n_components=512, n_nonzero=20, layer = 6,test_size=0.2, random_state=0, use_saved_Z=True, Z_path="Z.npy", top_k_atoms=10, n_perm_repeats=10):
 
-    log_name = f"cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl"
-
+    log_name = f"sparse_dictionary_learning/cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl"
+    print(log_name)
     if os.path.exists(log_name):
         return
     else:
@@ -50,7 +47,7 @@ def fit_sdl(Y_layer, X, n_components=512, n_nonzero=20, layer = 6,test_size=0.2,
         random_state=random_state
     )
 
-    Z_path=f"cache/Z_cache/Z_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.npy"
+    Z_path=f"sparse_dictionary_learning/cache/Z_cache/Z_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.npy"
 
     if os.path.exists(Z_path):
         print("Loading sparse codes Z")

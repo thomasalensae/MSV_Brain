@@ -78,7 +78,7 @@ def get_top_stimuli_for_atoms(sentences_df, n_components=512, n_nonzero=20, laye
     atom_indices: List of atom indices to analyze
     """
 
-    Z_path=f"cache/Z_cache/Z_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.npy"
+    Z_path=f"sparse_dictionary_learning/cache/Z_cache/Z_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.npy"
     if os.path.exists(Z_path):
         print("Loading sparse codes Z")
         Z = np.load(Z_path)
@@ -110,7 +110,7 @@ def get_top_stimuli_for_atoms(sentences_df, n_components=512, n_nonzero=20, laye
 
     return results
 
-def plot_selectivity_matrix(log_path, selectivity_threshold = 0.1):
+def plot_selectivity_matrix(log_path, n_components, n_nonzero, layer, selectivity_threshold = 0.1, ):
 
     data = []
     with open(log_path, 'r') as f:
@@ -149,11 +149,69 @@ def plot_selectivity_matrix(log_path, selectivity_threshold = 0.1):
     plt.figure(figsize=(28, 15))
 
     ax = sns.heatmap(matrix_final.T, cmap="YlGnBu", cbar_kws={'label': 'Importance'}, xticklabels=True, yticklabels=True)
-
+    ax.figure.axes[-1].yaxis.label.set_size(25)
+    ax.figure.axes[-1].tick_params(labelsize=20)
     ax.tick_params(axis='x', labelsize=14)
-    ax.tick_params(axis='y', labelsize=15)
-    plt.xlabel("Atoms", fontsize=19, labelpad=15)
-    plt.ylabel("Features", fontsize=19, labelpad=15)
+    ax.tick_params(axis='y', labelsize=22)
+    plt.xlabel("Atoms", fontsize=27, labelpad=15)
+    plt.ylabel("Features", fontsize=27, labelpad=15)
+    plt.title(f"Layer {layer}, components {n_components}, nonzero {n_nonzero}", fontsize=30)
     plt.tight_layout()
+    save_path = f"sparse_dictionary_learning/figures/selectivity_matrix_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.png"
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=300)
+    print(f"Figure saved to {save_path}")
+    plt.show()
+
+def compute_identifiability_metrics(log_path, threshold=0.8):
+    data = []
+    with open(log_path, 'r') as f:
+        for line in f:
+            data.append(json.loads(line))
+
+    # Matrix Atoms x Features with the importance of permutation
+    features = [d['feature'] for d in data]
+    all_atoms = sorted(list(set(int(a) for d in data for a in d['permutation_importance'].keys())))
+    matrix = pd.DataFrame(0.0, index=all_atoms, columns=features)
+
+    for d in data:
+        for atom, importance in d['permutation_importance'].items():
+            matrix.loc[int(atom), d['feature']] = importance
+
+    row_sums = matrix.sum(axis=1).replace(0, 1)
+    id_scores = matrix.max(axis=1) / row_sums # importance of the atom on its prefered feature / importance total on all features
+
+    # Find the prefered feature for each atom
+    dominant_feature = matrix.idxmax(axis=1)
+
+    results_df = pd.DataFrame({
+        'S_ID': id_scores,
+        'dominant_feature': dominant_feature
+    })
+
+    # Remove the atoms with null importance
+    results_df = results_df[matrix.sum(axis=1) > 0]
+
+    return results_df, matrix
+
+def plot_identifiability_distribution(log_path, n_components, n_nonzero, layer):
+
+    results_df, matrix = compute_identifiability_metrics(log_path=log_path)
+
+    plt.figure(figsize=(10, 6))
+    sns.histplot(results_df['S_ID'], bins=20, kde=True, color='teal')
+    plt.title(f"Layer {layer}, components {n_components}, nonzero {n_nonzero}",fontsize=16)
+    plt.xlabel("Identifiability Score",fontsize=16)
+    plt.ylabel("Number of Atoms",fontsize=16)
+    plt.xticks(fontsize=14)
+    plt.yticks(fontsize=14)
+    plt.legend(fontsize=12)
+    plt.legend()
+
+    save_path = f"sparse_dictionary_learning/figures/identifiability_distribution_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.png"
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=300)
+    print(f"Figure saved to {save_path}")
+
     plt.show()
 

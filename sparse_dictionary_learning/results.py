@@ -1,9 +1,10 @@
-import pandas as pd
 import json
-import matplotlib.pyplot as plt
-import numpy as np
-import seaborn as sns
 import os
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
 
 def plot_atom_importance(feature_name, log_path="experiment_log.jsonl", top_k=10):
 
@@ -193,7 +194,6 @@ def compute_identifiability_metrics(log_path, threshold=0.8):
     results_df = results_df[matrix.sum(axis=1) > 0]
 
     return results_df, matrix
-
 def plot_identifiability_distribution(log_path, n_components, n_nonzero, layer):
 
     results_df, matrix = compute_identifiability_metrics(log_path=log_path)
@@ -215,3 +215,66 @@ def plot_identifiability_distribution(log_path, n_components, n_nonzero, layer):
 
     plt.show()
 
+
+def compute_sid_for_layer(log_path):
+    if not os.path.exists(log_path):
+        return None
+
+    data = []
+    with open(log_path, 'r') as f:
+        for line in f:
+            data.append(json.loads(line))
+
+    if not data:
+        return None
+
+    features = [d['feature'] for d in data]
+    all_atoms = sorted(list(set(int(a) for d in data for a in d['permutation_importance'].keys())))
+    matrix = pd.DataFrame(0.0, index=all_atoms, columns=features)
+
+    for d in data:
+        for atom, importance in d['permutation_importance'].items():
+            matrix.loc[int(atom), d['feature']] = importance
+
+    row_sums = matrix.sum(axis=1).replace(0, 1)
+    all_sid_scores = matrix.max(axis=1) / row_sums
+
+    top_atoms_indices = matrix.idxmax(axis=0)
+
+    top_sid_scores = [all_sid_scores.loc[atom_idx] for atom_idx in top_atoms_indices]
+
+    return top_sid_scores
+
+def plot_identifiability(n_layers, n_components, n_nonzero):
+
+    all_results = []
+
+    for layer in range(0, n_layers):
+
+        log_path = f"sparse_dictionary_learning/cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl"
+        scores = compute_sid_for_layer(log_path)
+
+        if scores is not None:
+            for s in scores:
+                all_results.append({'Layer': layer, 'S_ID': s})
+
+    df_plot = pd.DataFrame(all_results)
+
+    plt.figure(figsize=(12, 7))
+
+    sns.stripplot(data=df_plot, x='Layer', y='S_ID', size=5, color='teal', alpha=0.5, jitter=0.25)
+    sns.pointplot(data=df_plot, x='Layer', y='S_ID', color='red', scale=0.7, label='Average')
+
+    plt.title(f"components {n_components}, nonzero {n_nonzero}", fontsize=16)
+    plt.xlabel("Layers", fontsize=14)
+    plt.ylabel("Identifiability Score", fontsize=14)
+    plt.ylim(0, 1.05)
+    plt.legend()
+    plt.grid(axis='y', linestyle=':', alpha=0.7)
+
+    plt.tight_layout()
+    save_path = f"sparse_dictionary_learning/figures/identifiability_per_layer_figures_ncomp{n_components}_nnonzero{n_nonzero}.png"
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=300)
+    print(f"Figure saved to {save_path}")
+    plt.show()

@@ -8,9 +8,12 @@ print("Starting ...")
 
 # Parameters
 n_components=512
-n_nonzero=20
+n_nonzero=10
 
-for layer in [0,1,2,3,4,5,6,7,8,9,10,11]:
+#for layer in [0,1,2,3,4,5,6,7,8,9,10,11]:
+"""
+
+for layer in [8, 9,10,11]:
     print("Processing layer:", layer)
     # Load dataset
     df, X = dataset.load()
@@ -33,4 +36,6 @@ for layer in [0,1,2,3,4,5,6,7,8,9,10,11]:
 
     results.plot_identifiability_distribution(log_path=f"sparse_dictionary_learning/cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl", n_components=n_components, n_nonzero=n_nonzero, layer = layer)
 
+"""
+results.plot_identifiability(12, n_components,n_nonzero)
 print("Done.")

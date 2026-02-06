@@ -24,6 +24,9 @@ def setup_custom_logger(log_file="experiment_log.jsonl"):
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
             handler.close()
+    log_dir = os.path.dirname(log_file)
+    if log_dir and not os.path.exists(log_dir):
+        os.makedirs(log_dir)
 
     handler = logging.FileHandler(log_file)
     handler.setFormatter(logging.Formatter('%(message)s'))
@@ -31,9 +34,9 @@ def setup_custom_logger(log_file="experiment_log.jsonl"):
 
     return logger
 
-def fit_sdl(Y_layer, X, n_components=512, n_nonzero=20, layer = 6,test_size=0.2, random_state=0, use_saved_Z=True, Z_path="Z.npy", top_k_atoms=10, n_perm_repeats=10):
+def fit_sdl(Y_layer, X, n_components=512, n_nonzero=20, layer = 6,test_size=0.2, random_state=0, use_saved_Z=True, Z_path="Z.npy", top_k_atoms=15, n_perm_repeats=10):
 
-    log_name = f"sparse_dictionary_learning/cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl"
+    log_name = f"/Users/maxime/MSV_Brain/sparse_dictionary_learning/cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl"
     print(log_name)
 
     if os.path.exists(log_name):
@@ -53,7 +56,7 @@ def fit_sdl(Y_layer, X, n_components=512, n_nonzero=20, layer = 6,test_size=0.2,
         random_state=random_state
     )
 
-    Z_path=f"sparse_dictionary_learning/cache/Z_cache/Z_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.npy"
+    Z_path=f"/Users/maxime/MSV_Brain/sparse_dictionary_learning/cache/Z_cache/Z_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.npy"
 
     if os.path.exists(Z_path):
         print("Loading sparse codes Z")
@@ -61,6 +64,9 @@ def fit_sdl(Y_layer, X, n_components=512, n_nonzero=20, layer = 6,test_size=0.2,
     else:
         print("Learning dictionary and computing sparse codes Z")
         Z = dict_learner.fit_transform(Y_std)
+        Z_path_dir = os.path.dirname(Z_path)
+        if not os.path.exists(Z_path_dir):
+            os.makedirs(Z_path_dir)
         np.save(Z_path, Z)
 
     # Split

@@ -1,7 +1,7 @@
 import random
 import numpy as np
 import pandas as pd
-from utils.config import cfg
+from sparse_dictionary_learning.utils.config import cfg
 import torch
 
 from sklearn.preprocessing import OneHotEncoder
@@ -63,6 +63,7 @@ def load():
     print("Shape:", df.shape)
     print("Columns:", list(df.columns))
 
+
     if cfg.stratify_col not in df.columns:
         raise ValueError(
             f"stratify_col='{cfg.stratify_col}' not found in columns. "
@@ -73,6 +74,7 @@ def load():
     df = stratified_sample(df, by=cfg.stratify_col, n_total=cfg.n_max, seed=cfg.random_seed)
     print("After subsample shape:", df.shape)
     print(df[cfg.stratify_col].value_counts())
+
 
     # Build X (remove text column, cast object columns to categorical)
     X = build_X_from_df(df, sentence_col=cfg.sentence_col)
@@ -91,5 +93,5 @@ def load():
 
     X_ohe = pd.DataFrame(X_filtered, columns=new_feature_names, index=X.index)
 
-    return df, X_ohe
+    return df, X
 

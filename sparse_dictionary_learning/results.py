@@ -1,9 +1,61 @@
 import json
 import os
+
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
+import matplotlib.pyplot as plt
 import numpy as np
+
+def analyze_hierarchical_correlation(matrix):
+    hierarchy_pairs = [
+        ('etre_vivant', 'animal'),
+        ('etre_vivant', 'plante'),
+        ('animal', 'terrestre'),
+        ('animal', 'aquatique'),
+        ('plante', 'arbre'),
+        ('plante', 'fleur'),
+        ('objet', 'alimentaire'),
+        ('objet', 'outil')
+    ]
+
+    results = []
+    for parent, child in hierarchy_pairs:
+        if parent in matrix.columns and child in matrix.columns:
+
+            correlation = matrix[parent].corr(matrix[child])
+            results.append({
+                'Parent': parent,
+                'Enfant': child,
+                'Correlation': correlation
+            })
+
+    return pd.DataFrame(results)
+
+def plot_hierarchy_heatmap(matrix, n_components=512, n_nonzero=20, layer=6):
+    ordered_features = [
+        'etre_vivant', 'animal', 'terrestre', 'aquatique',
+        'plante', 'arbre', 'fleur',
+        'objet', 'alimentaire', 'outil'
+    ]
+
+    cols = [c for c in ordered_features if c in matrix.columns]
+    corr_matrix = matrix[cols].corr()
+
+    plt.figure(figsize=(12, 10))
+
+    ax = sns.heatmap(corr_matrix, annot=True, fmt=".2f", annot_kws={"size": 12, "color": "black"}, cmap='RdBu_r', center=0, vmin=-1, vmax=1)
+
+    plt.xticks(fontsize=18, rotation=45, ha='right')
+    plt.yticks(fontsize=18, rotation=0)
+
+    plt.title(f"Layer {layer}, components {n_components}, nonzero {n_nonzero}", fontsize=20)
+
+    cbar = ax.collections[0].colorbar
+    cbar.ax.tick_params(labelsize=15)
+
+    plt.tight_layout()
+    plt.savefig(f"/Users/maxime/MSV_Brain/sparse_dictionary_learning/figures/correlation_hierarchique_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}")
+    plt.show()
 
 
 def plot_atom_importance(feature_name, log_path="experiment_log.jsonl", top_k=10):
@@ -143,26 +195,58 @@ def plot_selectivity_matrix(log_path, n_components, n_nonzero, layer, selectivit
     }, index=matrix_clean.index)
 
     sorted_atoms = sort_df.sort_values(by=['feature_pos', 'importance'], ascending=[True, False]).index
-
     matrix_final = matrix_clean.loc[sorted_atoms]
-    #matrix_final = matrix_final[matrix_final.sum(axis=1) > 0]
+
+    order = True
+    if order:
+        custom_feature_order = [
+            "animal",
+            "animal_terrestre",
+            "animal_aquatique",
+            "plante",
+            "plante_arbre",
+            "plante_fleur",
+            "objet",
+            "objet_alimentaire",
+            "objet_non_alimentaire"
+        ]
+        custom_feature_order = [
+            "etre_vivant",
+            "animal",
+            "terrestre",
+            "aquatique",
+            "plante",
+            "arbre",
+            "fleur",
+            "objet",
+            "alimentaire",
+            "outil"
+        ]
+
+        matrix_final = matrix_final.reindex(columns=custom_feature_order)
 
     plt.figure(figsize=(28, 15))
 
     ax = sns.heatmap(matrix_final.T, cmap="YlGnBu", cbar_kws={'label': 'Importance'}, xticklabels=True, yticklabels=True)
     ax.figure.axes[-1].yaxis.label.set_size(25)
     ax.figure.axes[-1].tick_params(labelsize=20)
-    ax.tick_params(axis='x', labelsize=14)
-    ax.tick_params(axis='y', labelsize=22)
+    ax.tick_params(axis='x', labelsize=18, rotation=70)
+    ax.tick_params(axis='y', labelsize=28, rotation=45)
+    for lab in ax.get_yticklabels():
+        lab.set_va('top')
     plt.xlabel("Atoms", fontsize=27, labelpad=15)
     plt.ylabel("Features", fontsize=27, labelpad=15)
-    plt.title(f"Layer {layer}, components {n_components}, nonzero {n_nonzero}", fontsize=30)
+    plt.title(f"Layer {layer}, components {n_components}, nonzero {n_nonzero}", fontsize=34)
     plt.tight_layout()
     save_path = f"sparse_dictionary_learning/figures/selectivity_matrix_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.png"
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plt.savefig(save_path, dpi=300)
+    plt.savefig(save_path, dpi=100)
     print(f"Figure saved to {save_path}")
     plt.show()
+
+    return matrix_final
+
+
 
 def compute_identifiability_metrics(log_path, threshold=0.8):
     data = []

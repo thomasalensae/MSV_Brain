@@ -89,7 +89,7 @@ def compute_embeddings(df, cfg) -> list[np.ndarray]:
         )
         Y_stack = np.stack(Y_layers, axis=1)  # [n, 12, hidden]
         np.save(cache_path, Y_stack)
-        print("Saved cache:", cache_path)
+        print("Saved cache_categ_1:", cache_path)
 
     print("Layer shapes:", [y.shape for y in Y_layers])
     return Y_layers

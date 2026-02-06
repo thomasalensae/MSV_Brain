@@ -157,7 +157,7 @@ def compute_tsne_per_layer(layer_embeddings, n_components_pca=20):
 tsne_layers = compute_tsne_per_layer(layer_embeddings)
 
 # ===========================
-# Save t-SNE figures
+# Save t-SNE figures_categ_1
 # ===========================
 all_figures = []
 
@@ -209,8 +209,8 @@ for feature in X.columns:
     generate_feature_gif(feature, num_layers)
 
 # ===========================
-# Show all figures (optional)
+# Show all figures_categ_1 (optional)
 # ===========================
-print("\nDisplaying all figures...")
+print("\nDisplaying all figures_categ_1...")
 for fig in all_figures:
     fig.show()

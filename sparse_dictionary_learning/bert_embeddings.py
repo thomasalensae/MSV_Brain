@@ -15,7 +15,6 @@ def mean_pool(hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torc
 
 @torch.no_grad()
 def extract_layerwise_sentence_embeddings(sentences: list[str], model_name, batch_size = 32, max_length = 64, device = None, show_progress = True,) -> list[np.ndarray]:
-    """Return a list of 12 numpy arrays (layer 1..12), each shaped [n_samples, hidden_dim]"""
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -46,7 +45,14 @@ def extract_layerwise_sentence_embeddings(sentences: list[str], model_name, batc
 
         # Pooling as a phrase representation
         for layer_idx in range(1, 13):
-            pooled = mean_pool(hs[layer_idx], enc["attention_mask"])  # [B, H]
+            layer_h = hs[layer_idx]  # [B, T, H]
+            cls_token_id = tokenizer.cls_token_id
+            mask_cls = (enc["input_ids"] == cls_token_id).unsqueeze(-1).type_as(layer_h)
+            s = (mask_cls * layer_h).sum(dim=1)
+            d = mask_cls.sum(dim=1).clamp(min=1e-6)
+            pooled = s / d
+
+            #pooled = mean_pool(hs[layer_idx], enc["attention_mask"])  # [B, H]
             buckets[layer_idx - 1].append(pooled.detach().cpu().float())
 
     Y_layers = []
@@ -55,12 +61,16 @@ def extract_layerwise_sentence_embeddings(sentences: list[str], model_name, batc
     return Y_layers
 
 def cache_path_for_embeddings(cfg, df) -> str:
-    os.makedirs(cfg.cache_dir, exist_ok=True)
-    base = os.path.splitext(os.path.basename(cfg.dataset_csv))[0]
-    return os.path.join(
-        cfg.cache_dir,
-        f"{base}__{cfg.model_name.replace('/', '_')}__maxlen{cfg.max_length}__bs{cfg.batch_size}__n{len(df)}__str{cfg.stratify_col}.npy"
+    directory = cfg.embeddings_cache
+    filename = (
+        f"{cfg.dataset_name}__"
+        f"{cfg.model_name.replace('/', '_')}__"
+        f"maxlen{cfg.max_length}__"
+        f"bs{cfg.batch_size}__"
+        f"n{len(df)}__"
+        f"str{cfg.stratify_col}.npy"
     )
+    return os.path.join(directory, filename)
 
 def compute_embeddings(df, cfg) -> list[np.ndarray]:
     """Compute or load cached BERT embeddings for sentences in df."""

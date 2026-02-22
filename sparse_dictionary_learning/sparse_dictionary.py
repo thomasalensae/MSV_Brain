@@ -3,20 +3,18 @@ import pandas as pd
 import logging
 import json
 from datetime import datetime
-from joblib import dump, load
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.multioutput import MultiOutputClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from sklearn.inspection import permutation_importance
 import time
-from sklearn.decomposition import MiniBatchDictionaryLearning
-from utils.preprocessing import preprocess_embeddings
 import os
 
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import MiniBatchDictionaryLearning
+from sklearn.model_selection import train_test_split
+from sklearn.utils import resample
+from sklearn.linear_model import LogisticRegression, ElasticNet
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, r2_score, mean_squared_error, roc_auc_score
+from sklearn.inspection import permutation_importance
 
-def setup_custom_logger(log_file="experiment_log.jsonl"):
+def setup_custom_logger(log_file):
     logger = logging.getLogger("LinguisticProbing")
     logger.setLevel(logging.INFO)
 
@@ -24,6 +22,7 @@ def setup_custom_logger(log_file="experiment_log.jsonl"):
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
             handler.close()
+
     log_dir = os.path.dirname(log_file)
     if log_dir and not os.path.exists(log_dir):
         os.makedirs(log_dir)
@@ -31,105 +30,186 @@ def setup_custom_logger(log_file="experiment_log.jsonl"):
     handler = logging.FileHandler(log_file)
     handler.setFormatter(logging.Formatter('%(message)s'))
     logger.addHandler(handler)
-
     return logger
 
-def fit_sdl(Y_layer, X, n_components=512, n_nonzero=20, layer = 6,test_size=0.2, random_state=0, use_saved_Z=True, Z_path="Z.npy", top_k_atoms=15, n_perm_repeats=10):
+def is_binary(y):
+    y = np.asarray(y)
+    y = y[~np.isnan(y)]
+    uniq = np.unique(y)
+    return len(uniq) == 2 and set(uniq).issubset({0, 1})
 
-    log_name = f"/Users/maxime/MSV_Brain/sparse_dictionary_learning/cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl"
-    print(log_name)
+def fit_sdl(Y_layer, X, n_components, n_nonzero, layer, cfg, test_size=0.2, random_state=42, top_k_atoms=30, n_perm_repeats=10, n_bootstraps=50):
+    """
+    Fits Sparse Dictionary Learning
+    """
 
-    if os.path.exists(log_name):
+    log_path = os.path.join(cfg.log_dir, f"experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
+    z_path = os.path.join(cfg.z_cache, f"Z_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.npy")
+
+    if os.path.exists(log_path):
+        print(f"Skipping: log already exists at {log_path}")
         return
-    else:
-        logger = setup_custom_logger(log_name)
 
+    logger = setup_custom_logger(log_path)
     scaler = StandardScaler()
     Y_std = scaler.fit_transform(Y_layer)
 
-    # Dictionary learning
-    dict_learner = MiniBatchDictionaryLearning(
-        n_components=n_components,
-        transform_algorithm="omp",
-        transform_n_nonzero_coefs=n_nonzero,
-        batch_size=256,
-        random_state=random_state
-    )
-
-    Z_path=f"/Users/maxime/MSV_Brain/sparse_dictionary_learning/cache/Z_cache/Z_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.npy"
-
-    if os.path.exists(Z_path):
-        print("Loading sparse codes Z")
-        Z = np.load(Z_path)
+    # Sparse Dictionary Learning (Z)
+    if os.path.exists(z_path):
+        print(f"Loading cached Z codes from: {z_path}")
+        Z = np.load(z_path)
     else:
-        print("Learning dictionary and computing sparse codes Z")
+        print(f"Learning dictionary for layer {layer}...")
+        dict_learner = MiniBatchDictionaryLearning(
+            n_components=n_components,
+            transform_algorithm="omp",
+            transform_n_nonzero_coefs=n_nonzero,
+            batch_size=256,
+            random_state=random_state
+        )
         Z = dict_learner.fit_transform(Y_std)
-        Z_path_dir = os.path.dirname(Z_path)
-        if not os.path.exists(Z_path_dir):
-            os.makedirs(Z_path_dir)
-        np.save(Z_path, Z)
+        np.save(z_path, Z)
+        print(f"Saved Z codes to: {z_path}")
 
-    # Split
-    X_array = X.values
-    X_train, X_test, Z_train, Z_test = train_test_split(X_array, Z, test_size=test_size, random_state=random_state)
+    # Split Train/Test
+    X_train_indices, X_test_indices = train_test_split(np.arange(len(X)), test_size=test_size, random_state=random_state)
 
-    # Probing feature per feature
-    start_index = 0
+    Z_train, Z_test = Z[X_train_indices], Z[X_test_indices]
 
-    for i, feature_name in enumerate(X.columns[start_index:], start=start_index):
-
+    # Iterate over each linguistic feature
+    for i, feature_name in enumerate(X.columns):
         start_time = time.time()
 
-        y_train = X_train[:, i]
-        y_test = X_test[:, i]
+        # Retrieve binary labels for feature j
+        y_train = X.iloc[X_train_indices, i].values
+        y_test = X.iloc[X_test_indices, i].values
 
-        if y_train.sum() == 0 or y_train.sum() == len(y_train):
-            continue
+        print(f"Evaluating feature: {feature_name}")
 
-        print("Evaluating feature:", feature_name)
-
-        clf = LogisticRegression(penalty="l1", solver="saga", max_iter=1000, C=1.0, n_jobs=-1, random_state=random_state)
-
-        clf.fit(Z_train, y_train)
-        y_pred = clf.predict(Z_test)
-
-        acc = accuracy_score(y_test, y_pred)
-
-        # Classifier weight: most important atoms (|coef|)
-        coefs = clf.coef_.ravel()
-        top_atoms = np.argsort(np.abs(coefs))[::-1][:top_k_atoms]
-        top_atoms_str = ",".join([f"{a}:{coefs[a]:.4g}" for a in top_atoms])
-
-        # Permutation importance (per atom) for this feature
-        perm = permutation_importance(
-            clf,
-            Z_test,
-            y_test,
-            n_repeats=n_perm_repeats,
-            random_state=random_state,
+        # Logistic Regression (Probing)
+        clf = LogisticRegression(
+            penalty="l1",      # Lasso penalty as requested
+            solver="saga",     # Required for L1
+            max_iter=5000,
+            C=1.0,
             n_jobs=-1,
-            scoring="accuracy"
+            random_state=random_state
         )
+        clf.fit(Z_train, y_train)
 
-        perm_mean = perm.importances_mean
-        top_perm_atoms = np.argsort(perm_mean)[::-1][:top_k_atoms]
-        top_perm_atoms_str = ",".join([f"{a}:{perm_mean[a]:.4g}" for a in top_perm_atoms])
+        # Performance
+        y_pred = clf.predict(Z_test)
+        coefs = clf.coef_.ravel()
 
-        print(f"  Accuracy: {acc:.4f}")
-        print(f"  Top atoms by weight: {top_atoms_str}")
-        print(f"  Top atoms by permutation importance: {top_perm_atoms_str}")
+        auc_hat = float(roc_auc_score(y_test, y_pred))
 
-        end_time = time.time()
-        print(f"Time taken : {end_time - start_time:.2f} s\n")
+        # w_m importances via permutation
+        w_m = compute_atom_importance_manual(clf, Z_test, y_test, random_state, 100)
+
+        p_value = compute_feature_pvalue(y_test, y_pred, auc_hat, n_repeats=100, random_state=random_state)
+
+        # Identify Top Atoms (based on permutation)
+        top_atoms_indices = np.argsort(w_m)[::-1][:top_k_atoms]
 
         log_entry = {
-            "timestamp": datetime.now().isoformat(),
             "feature": feature_name,
+            "timestamp": datetime.now().isoformat(),
+            "layer": layer,
             "n_components": n_components,
             "n_nonzero": n_nonzero,
-            "accuracy": acc,
-            "weights": {int(a): float(coefs[a]) for a in top_atoms},
-            "permutation_importance": {int(a): float(perm_mean[a]) for a in top_perm_atoms}
+
+            "roc_auc": auc_hat,
+            "p_value": p_value,
+
+            "top_atoms": top_atoms_indices.tolist(),
+            "permutation_importance": {int(a): float(w_m[a]) for a in top_atoms_indices},
         }
-        logger.info(json.dumps(log_entry))
+
+        print(f"  AUC: {auc_hat:.3f} | Time: {time.time() - start_time:.2f}s")
+
+        with open(log_path, 'a') as f:
+            f.write(json.dumps(log_entry) + "\n")
+
+
+def compute_atom_importance_manual(clf, Z_test, y_test, random_state, n_repeats=10):
+    """
+    Calculates the importance w_m of each atom via permutation.
+
+    w_m = AUC_initial - mean(AUC_perm)
+    """
+
+    y_prob_base = clf.predict_proba(Z_test)[:, 1]
+    roc_auc = roc_auc_score(y_test, y_prob_base) # AUC^
+
+    n_samples, n_atoms = Z_test.shape
+    w = np.zeros(n_atoms)
+
+    rng = np.random.RandomState(random_state)
+    Z_work = Z_test.copy()
+
+    for m in range(n_atoms):
+
+        if clf.coef_[0, m] == 0:
+            w[m] = 0.0
+            continue
+
+        auc_perms = []
+        original_column = Z_work[:, m].copy()
+
+        # 3. Repeat B times (Permutation loop)
+        for b in range(n_repeats):
+
+            rng.shuffle(Z_work[:, m])
+
+            y_prob_perm = clf.predict_proba(Z_work)[:, 1]
+            score_perm = roc_auc_score(y_test, y_prob_perm)
+            auc_perms.append(score_perm) # AUC_perm
+
+        Z_work[:, m] = original_column
+
+        # w_m = AUC^ - (1/B) * Sum(AUC_perm)
+        mean_perm_auc = np.mean(auc_perms)
+        w[m] = roc_auc - mean_perm_auc
+
+    return w
+
+def compute_feature_pvalue(y_true, y_score, score_observed, n_repeats=100, random_state=42):
+
+    rng = np.random.RandomState(random_state)
+    null_scores = []
+
+    y_shuffled = y_true.copy()
+
+    for _ in range(n_repeats):
+        rng.shuffle(y_shuffled)
+        score_null = roc_auc_score(y_shuffled, y_score)
+        null_scores.append(score_null)
+
+    null_scores = np.array(null_scores)
+
+    n_greater = np.sum(null_scores >= score_observed)
+    p_value = (n_greater + 1) / (n_repeats + 1)
+
+    return p_value
+
+def compute_neff(w_m):
+    """
+    Calculates the Effective Number of Atoms (N_eff) based on Hill's entropy of order 2.
+
+    1. Normalization: p_m = w_m / sum(w)
+    2. N_eff = 1 / sum(p_m^2)
+    """
+    w_pos = np.maximum(w_m, 0)
+    sum_w = np.sum(w_pos)
+
+    if sum_w == 0:
+        return 0.0, np.zeros_like(w_pos)
+
+    # Probability distribution p_m
+    p_m = w_pos / sum_w
+
+    # Effective number N_eff
+    n_eff = 1.0 / np.sum(p_m ** 2)
+
+    return n_eff, p_m
 

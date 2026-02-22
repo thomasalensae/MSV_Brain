@@ -1,65 +1,45 @@
 import json
 import os
-
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.stats import norm
+from statsmodels.stats.multitest import multipletests
+
 
 def analyze_hierarchical_correlation(matrix):
     hierarchy_pairs = [
-        ('etre_vivant', 'animal'),
-        ('etre_vivant', 'plante'),
-        ('animal', 'terrestre'),
-        ('animal', 'aquatique'),
-        ('plante', 'arbre'),
-        ('plante', 'fleur'),
-        ('objet', 'alimentaire'),
-        ('objet', 'outil')
+        ('etre_vivant', 'animal'), ('etre_vivant', 'plante'),
+        ('animal', 'terrestre'), ('animal', 'aquatique'),
+        ('plante', 'arbre'), ('plante', 'fleur'),
+        ('objet', 'alimentaire'), ('objet', 'outil')
     ]
-
     results = []
     for parent, child in hierarchy_pairs:
         if parent in matrix.columns and child in matrix.columns:
-
             correlation = matrix[parent].corr(matrix[child])
-            results.append({
-                'Parent': parent,
-                'Enfant': child,
-                'Correlation': correlation
-            })
-
+            results.append({'Parent': parent, 'Enfant': child, 'Correlation': correlation})
     return pd.DataFrame(results)
 
-def plot_hierarchy_heatmap(matrix, n_components=512, n_nonzero=20, layer=6):
+def plot_hierarchy_heatmap(matrix, n_components, n_nonzero, layer, cfg):
     ordered_features = [
         'etre_vivant', 'animal', 'terrestre', 'aquatique',
-        'plante', 'arbre', 'fleur',
-        'objet', 'alimentaire', 'outil'
+        'plante', 'arbre', 'fleur', 'objet', 'alimentaire', 'outil'
     ]
-
     cols = [c for c in ordered_features if c in matrix.columns]
+    if not cols: return
+
     corr_matrix = matrix[cols].corr()
-
     plt.figure(figsize=(12, 10))
+    sns.heatmap(corr_matrix, annot=True, fmt=".2f", cmap='RdBu_r', center=0, vmin=-1, vmax=1)
+    plt.title(f"Layer {layer}, C={n_components}, K={n_nonzero}")
 
-    ax = sns.heatmap(corr_matrix, annot=True, fmt=".2f", annot_kws={"size": 12, "color": "black"}, cmap='RdBu_r', center=0, vmin=-1, vmax=1)
-
-    plt.xticks(fontsize=18, rotation=45, ha='right')
-    plt.yticks(fontsize=18, rotation=0)
-
-    plt.title(f"Layer {layer}, components {n_components}, nonzero {n_nonzero}", fontsize=20)
-
-    cbar = ax.collections[0].colorbar
-    cbar.ax.tick_params(labelsize=15)
-
-    plt.tight_layout()
-    plt.savefig(f"/Users/maxime/MSV_Brain/sparse_dictionary_learning/figures/correlation_hierarchique_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}")
+    save_path = os.path.join(cfg.figures_dir, f"hierarchy_L{layer}_C{n_components}.png")
+    plt.savefig(save_path)
     plt.show()
 
-
-def plot_atom_importance(feature_name, log_path="experiment_log.jsonl", top_k=10):
-
+def plot_atom_importance(feature_name, log_path, top_k=10):
     with open(log_path, 'r') as f:
         data = [json.loads(line) for line in f if json.loads(line)["feature"] == feature_name]
     if not data: return
@@ -70,295 +50,762 @@ def plot_atom_importance(feature_name, log_path="experiment_log.jsonl", top_k=10
     weight_vals = [entry["weights"].get(a, 0) for a in atoms]
 
     idx = np.argsort(perm_vals)
-    atoms = [atoms[i] for i in idx]
-    perm_vals = [perm_vals[i] for i in idx]
-    weight_vals = [weight_vals[i] for i in idx]
+    atoms = [atoms[i] for i in idx]; perm_vals = [perm_vals[i] for i in idx]; weight_vals = [weight_vals[i] for i in idx]
 
     fig, ax1 = plt.subplots(figsize=(10, 6))
-
-    color_perm = 'skyblue'
-    ax1.set_xlabel('Importance by Permutation (Decrease in Accuracy)', color='blue')
-    ax1.barh(np.arange(len(atoms)) + 0.2, perm_vals, 0.4, label='Permutation', color=color_perm)
-    ax1.tick_params(axis='x', labelcolor='blue')
+    ax1.barh(np.arange(len(atoms)) + 0.2, perm_vals, 0.4, color='skyblue', label='Permutation')
     ax1.set_yticks(np.arange(len(atoms)))
     ax1.set_yticklabels([f"Atom {a}" for a in atoms])
 
     ax2 = ax1.twiny()
-    ax2.set_xlabel('Magnitude of weight (Coeff L1)', color='red')
-    ax2.barh(np.arange(len(atoms)) - 0.2, [abs(w) for w in weight_vals], 0.4, label='weight (abs)', color='salmon', alpha=0.6)
-    ax2.tick_params(axis='x', labelcolor='red')
-
-    plt.title(f"Contribution of Atoms to the feature : {feature_name}\n(Acc: {entry['accuracy']:.2%})")
-    fig.tight_layout()
+    ax2.barh(np.arange(len(atoms)) - 0.2, [abs(w) for w in weight_vals], 0.4, color='salmon', alpha=0.6, label='Weight')
+    plt.title(f"Atom Importance: {feature_name}")
     plt.show()
 
-def summarize_feature_probing(feature_name, log_path="experiment_log.jsonl"):
+def get_top_stimuli_for_atoms(sentences_df, n_components, n_nonzero, layer, cfg, atom_indices=[0, 1], top_k=10):
+    z_path = os.path.join(cfg.z_cache, f"Z_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.npy")
+    if not os.path.exists(z_path):
+        raise FileNotFoundError(f"Z file not found: {z_path}")
 
-    feature_data = None
-    with open(log_path, 'r') as f:
-        for line in f:
-            entry = json.loads(line)
-            if entry["feature"] == feature_name:
-                feature_data = entry
-                break
-
-    if not feature_data:
-        print(f"Feature '{feature_name}' not found in logs.")
-        return
-
-    print(f"--- ANALYSE OF PROBING : {feature_name} ---")
-    print(f"Accuracy of the classifier : {feature_data['accuracy']:.4%}")
-
-    weights = feature_data["weights"]
-    perms = feature_data["permutation_importance"]
-
-    top_weight_atoms = set(weights.keys())
-    top_perm_atoms = set(perms.keys())
-    consensus_atoms = top_weight_atoms.intersection(top_perm_atoms)
-
-    print(f"\nAreas of consensus (present in both analyses) : {list(consensus_atoms)}")
-
-    print("\nDetails of Top Atoms (Weight) :")
-    for atom, val in weights.items():
-        role = "Activation" if val > 0 else "Suppression"
-        print(f"  - Atom {atom}: {val:.4f} ({role})")
-
-def get_top_stimuli_for_atoms(sentences_df, n_components=512, n_nonzero=20, layer = 6, atom_indices = [0, 1], top_k=10):
-    """
-    Extracts the sentences that most strongly activate specific atoms.
-    Z: Sparse code matrix (n_sentences, n_components)
-    sentences_df: DataFrame containing the original sentences (must be aligned with Z)
-    atom_indices: List of atom indices to analyze
-    """
-
-    Z_path=f"sparse_dictionary_learning/cache/Z_cache/Z_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.npy"
-    if os.path.exists(Z_path):
-        print("Loading sparse codes Z")
-        Z = np.load(Z_path)
-    else:
-        raise FileNotFoundError(f"Sparse codes Z not found at {Z_path}. Please compute them first.")
+    Z = np.load(z_path)
+    text_col = 'sentence' if 'sentence' in sentences_df.columns else sentences_df.columns[0]
+    texts = sentences_df[text_col].values
     results = {}
-
-    if isinstance(sentences_df, pd.DataFrame):
-        text_col = 'sentence' if 'sentence' in sentences_df.columns else sentences_df.columns[0]
-        texts = sentences_df[text_col].values
-    else:
-        texts = sentences_df
 
     for atom_idx in atom_indices:
         activations = Z[:, atom_idx]
         top_indices = np.argsort(activations)[::-1][:top_k]
-
-        print(f"\n=== TOP STIMULI FOR THE ATOM {atom_idx} ===")
-        print(f"(Maximum activations between {activations[top_indices[0]]:.4f} and {activations[top_indices[-1]]:.4f})")
-
-        exemplars = []
-        for rank, idx in enumerate(top_indices):
-            sentence = texts[idx]
-            act_val = activations[idx]
-            print(f"{rank+1}. [{act_val:.4f}] {sentence}")
-            exemplars.append((sentence, act_val))
-
-        results[atom_idx] = exemplars
-
+        results[atom_idx] = [(texts[i], activations[i]) for i in top_indices]
     return results
 
-def plot_selectivity_matrix(log_path, n_components, n_nonzero, layer, selectivity_threshold = 0.1, ):
+
+
+def plot_selectivity_matrix(log_path, n_components, n_nonzero, layer, cfg, selectivity_threshold=0.1):
+    rename_dict = {
+        "sentence_CLAUSE": "Relative clause type",
+        "sentence_RC_attached": "Attachment site",
+        "subj_NUM": "Subj. num.",
+        "subj_GEN": "Subj. gender",
+        "subj_ZIPF": "Subj. freq.",
+        "obj_NUM": "Obj. num.",
+        "obj_GEN": "Obj. gender",
+        "obj_ZIPF": "Obj. freq.",
+        "embed_NUM": "Embed. num.",
+        "embed_GEN": "Embed. gender",
+        "embed_ZIPF": "Embed. freq.",
+        "verb_ZIPF": "Verb freq.",
+    }
 
     data = []
+    feature_metrics = {}
     with open(log_path, 'r') as f:
         for line in f:
-            data.append(json.loads(line))
+            entry = json.loads(line)
+            data.append(entry)
+            raw_feat = entry['feature']
+            clean_feat = rename_dict.get(raw_feat, raw_feat)
+            feature_metrics[clean_feat] = {
+                'auc': entry.get('roc_auc', 0.0),
+                'p': entry.get('p_value', 1.0)
+            }
 
-    features = [d['feature'] for d in data]
+    features_raw = [d['feature'] for d in data]
+    features = [rename_dict.get(f, f) for f in features_raw]
     all_atoms = sorted(list(set(int(a) for d in data for a in d['permutation_importance'].keys())))
 
     matrix = pd.DataFrame(0.0, index=all_atoms, columns=features)
     for d in data:
+        feat_name = rename_dict.get(d['feature'], d['feature'])
         for atom, importance in d['permutation_importance'].items():
-            matrix.loc[int(atom), d['feature']] = importance
+            matrix.loc[int(atom), feat_name] = importance
 
-    # We normalize by row to see the distribution of the atom's importance across features
     row_sums = matrix.sum(axis=1).replace(0, 1)
     matrix_relative = matrix.divide(row_sums, axis=0)
-
-    # If the atom assigns less than X% of its importance to a feature, it is deleted
     matrix_clean = matrix.where(matrix_relative > selectivity_threshold, 0)
 
-    # 3. Sorting
     max_feature_idx = matrix_clean.idxmax(axis=1).map({feat: i for i, feat in enumerate(features)})
     max_values = matrix_clean.max(axis=1)
 
-    sort_df = pd.DataFrame({
-        'feature_pos': max_feature_idx,
-        'importance': max_values
-    }, index=matrix_clean.index)
-
+    sort_df = pd.DataFrame({'feature_pos': max_feature_idx, 'importance': max_values}, index=matrix_clean.index)
     sorted_atoms = sort_df.sort_values(by=['feature_pos', 'importance'], ascending=[True, False]).index
     matrix_final = matrix_clean.loc[sorted_atoms]
 
-    order = True
-    if order:
-        custom_feature_order = [
-            "animal",
-            "animal_terrestre",
-            "animal_aquatique",
-            "plante",
-            "plante_arbre",
-            "plante_fleur",
-            "objet",
-            "objet_alimentaire",
-            "objet_non_alimentaire"
-        ]
-        custom_feature_order = [
-            "etre_vivant",
-            "animal",
-            "terrestre",
-            "aquatique",
-            "plante",
-            "arbre",
-            "fleur",
-            "objet",
-            "alimentaire",
-            "outil"
-        ]
-
-        matrix_final = matrix_final.reindex(columns=custom_feature_order)
-
-    plt.figure(figsize=(28, 15))
-
+    plt.figure(figsize=(28, 14))
     ax = sns.heatmap(matrix_final.T, cmap="YlGnBu", cbar_kws={'label': 'Importance'}, xticklabels=True, yticklabels=True)
-    ax.figure.axes[-1].yaxis.label.set_size(25)
-    ax.figure.axes[-1].tick_params(labelsize=20)
-    ax.tick_params(axis='x', labelsize=18, rotation=70)
-    ax.tick_params(axis='y', labelsize=28, rotation=45)
+
+    features_ordered = matrix_final.columns
+
+    cbar = ax.collections[0].colorbar
+    cbar.ax.tick_params(labelsize=20)
+    cbar.set_label('Importance', size=25)
+
+    ax.tick_params(axis='x', labelsize=14, rotation=90)
+    ax.tick_params(axis='y', labelsize=24, rotation=0)
+
     for lab in ax.get_yticklabels():
-        lab.set_va('top')
-    plt.xlabel("Atoms", fontsize=27, labelpad=15)
-    plt.ylabel("Features", fontsize=27, labelpad=15)
-    plt.title(f"Layer {layer}, components {n_components}, nonzero {n_nonzero}", fontsize=34)
+        lab.set_va('center')
+
+    plt.xlabel("Atoms", fontsize=30, labelpad=15)
+    plt.ylabel("Features", fontsize=30, labelpad=20)
+    plt.title(f"Layer {layer}, components {n_components}, nonzero {n_nonzero}", fontsize=34, pad=20)
+
     plt.tight_layout()
-    save_path = f"sparse_dictionary_learning/figures/selectivity_matrix_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.png"
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plt.savefig(save_path, dpi=100)
-    print(f"Figure saved to {save_path}")
+    save_path = os.path.join(cfg.figures_dir, f"selectivity_L{layer}_C{n_components}_K{n_nonzero}.png")
+    plt.savefig(save_path, dpi=70)
     plt.show()
 
     return matrix_final
 
-
-
-def compute_identifiability_metrics(log_path, threshold=0.8):
+def plot_selectivity_matrix2(log_path, n_components, n_nonzero, layer, cfg, selectivity_threshold=0.1):
     data = []
     with open(log_path, 'r') as f:
-        for line in f:
-            data.append(json.loads(line))
+        for line in f: data.append(json.loads(line))
 
-    # Matrix Atoms x Features with the importance of permutation
     features = [d['feature'] for d in data]
     all_atoms = sorted(list(set(int(a) for d in data for a in d['permutation_importance'].keys())))
-    matrix = pd.DataFrame(0.0, index=all_atoms, columns=features)
 
+    matrix = pd.DataFrame(0.0, index=all_atoms, columns=features)
     for d in data:
         for atom, importance in d['permutation_importance'].items():
             matrix.loc[int(atom), d['feature']] = importance
 
     row_sums = matrix.sum(axis=1).replace(0, 1)
-    id_scores = matrix.max(axis=1) / row_sums # importance of the atom on its prefered feature / importance total on all features
+    matrix_clean = matrix.where((matrix.divide(row_sums, axis=0)) > selectivity_threshold, 0)
 
-    # Find the prefered feature for each atom
-    dominant_feature = matrix.idxmax(axis=1)
+    # Custom order
+    custom_order = ["etre_vivant", "animal", "terrestre", "aquatique", "plante", "arbre", "fleur", "objet", "alimentaire", "outil"]
+    matrix_final = matrix_clean.reindex(columns=[c for c in custom_order if c in matrix_clean.columns])
 
+    plt.figure(figsize=(20, 10))
+    sns.heatmap(matrix_final.T, cmap="YlGnBu")
+    plt.title(f"Selectivity Layer {layer}")
+
+    save_path = os.path.join(cfg.figures_dir, f"selectivity_L{layer}_C{n_components}.png")
+    plt.savefig(save_path)
+    plt.show()
+    return matrix_final
+
+def compute_identifiability_metrics(log_path):
+    data = []
+    with open(log_path, 'r') as f:
+        for line in f: data.append(json.loads(line))
+
+    features = [d['feature'] for d in data]
+    all_atoms = sorted(list(set(int(a) for d in data for a in d['permutation_importance'].keys())))
+    matrix = pd.DataFrame(0.0, index=all_atoms, columns=features)
+    for d in data:
+        for atom, importance in d['permutation_importance'].items():
+            matrix.loc[int(atom), d['feature']] = importance
+
+    row_sums = matrix.sum(axis=1).replace(0, 1)
     results_df = pd.DataFrame({
-        'S_ID': id_scores,
-        'dominant_feature': dominant_feature
+        'S_ID': matrix.max(axis=1) / row_sums,
+        'dominant_feature': matrix.idxmax(axis=1)
     })
+    return results_df[matrix.sum(axis=1) > 0], matrix
 
-    # Remove the atoms with null importance
-    results_df = results_df[matrix.sum(axis=1) > 0]
-
-    return results_df, matrix
-def plot_identifiability_distribution(log_path, n_components, n_nonzero, layer):
-
-    results_df, matrix = compute_identifiability_metrics(log_path=log_path)
-
+def plot_identifiability_distribution(log_path, n_components, n_nonzero, layer, cfg):
+    results_df, _ = compute_identifiability_metrics(log_path)
     plt.figure(figsize=(10, 6))
-    sns.histplot(results_df['S_ID'], bins=20, kde=True, color='teal')
-    plt.title(f"Layer {layer}, components {n_components}, nonzero {n_nonzero}",fontsize=16)
-    plt.xlabel("Identifiability Score",fontsize=16)
-    plt.ylabel("Number of Atoms",fontsize=16)
-    plt.xticks(fontsize=14)
-    plt.yticks(fontsize=14)
-    plt.legend(fontsize=12)
-    plt.legend()
+    sns.histplot(results_df['S_ID'], bins=20, color='teal')
+    plt.title(f"Identifiability L{layer}")
 
-    save_path = f"sparse_dictionary_learning/figures/identifiability_distribution_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.png"
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plt.savefig(save_path, dpi=300)
-    print(f"Figure saved to {save_path}")
-
+    save_path = os.path.join(cfg.figures_dir, f"id_dist_L{layer}_C{n_components}.png")
+    plt.savefig(save_path)
     plt.show()
 
-
-def compute_sid_for_layer(log_path):
-    if not os.path.exists(log_path):
-        return None
-
-    data = []
-    with open(log_path, 'r') as f:
-        for line in f:
-            data.append(json.loads(line))
-
-    if not data:
-        return None
-
-    features = [d['feature'] for d in data]
-    all_atoms = sorted(list(set(int(a) for d in data for a in d['permutation_importance'].keys())))
-    matrix = pd.DataFrame(0.0, index=all_atoms, columns=features)
-
-    for d in data:
-        for atom, importance in d['permutation_importance'].items():
-            matrix.loc[int(atom), d['feature']] = importance
-
-    row_sums = matrix.sum(axis=1).replace(0, 1)
-    all_sid_scores = matrix.max(axis=1) / row_sums
-
-    top_atoms_indices = matrix.idxmax(axis=0)
-
-    top_sid_scores = [all_sid_scores.loc[atom_idx] for atom_idx in top_atoms_indices]
-
-    return top_sid_scores
-
-def plot_identifiability(n_layers, n_components, n_nonzero):
-
+def plot_identifiability(n_layers, n_components, n_nonzero, cfg):
     all_results = []
-
-    for layer in range(0, n_layers):
-
-        log_path = f"sparse_dictionary_learning/cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl"
-        scores = compute_sid_for_layer(log_path)
-
-        if scores is not None:
-            for s in scores:
+    for layer in range(n_layers):
+        log_path = os.path.join(cfg.log_dir, f"experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
+        if os.path.exists(log_path):
+            res_df, _ = compute_identifiability_metrics(log_path)
+            for s in res_df['S_ID']:
                 all_results.append({'Layer': layer, 'S_ID': s})
 
+    if not all_results: return
     df_plot = pd.DataFrame(all_results)
-
     plt.figure(figsize=(12, 7))
+    sns.stripplot(data=df_plot, x='Layer', y='S_ID', color='teal', alpha=0.3)
+    sns.pointplot(data=df_plot, x='Layer', y='S_ID', color='red')
 
-    sns.stripplot(data=df_plot, x='Layer', y='S_ID', size=5, color='teal', alpha=0.5, jitter=0.25)
-    sns.pointplot(data=df_plot, x='Layer', y='S_ID', color='red', scale=0.7, label='Average')
-
-    plt.title(f"components {n_components}, nonzero {n_nonzero}", fontsize=16)
-    plt.xlabel("Layers", fontsize=14)
-    plt.ylabel("Identifiability Score", fontsize=14)
-    plt.ylim(0, 1.05)
-    plt.legend()
-    plt.grid(axis='y', linestyle=':', alpha=0.7)
-
-    plt.tight_layout()
-    save_path = f"sparse_dictionary_learning/figures/identifiability_per_layer_figures_ncomp{n_components}_nnonzero{n_nonzero}.png"
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plt.savefig(save_path, dpi=300)
-    print(f"Figure saved to {save_path}")
+    save_path = os.path.join(cfg.figures_dir, f"id_layers_C{n_components}.png")
+    plt.savefig(save_path)
     plt.show()
+
+
+
+
+def aggregate_importance(log_path, n_components, n_nonzero, layer, cfg, mode="k", k=5, pct=0.05):
+
+    rows = []
+
+    with open(log_path, "r") as f:
+        for line in f:
+            entry = json.loads(line)
+
+            if "permutation_importance" not in entry:
+                continue
+
+            feature = entry["feature"]
+            imp_dict = entry["permutation_importance"]
+
+            values = np.array(list(imp_dict.values()))
+            values = np.maximum(values, 0)  # clip négatif
+
+            n_atoms = len(values)
+
+            if mode == "k":
+                k_eff = min(k, n_atoms)
+            elif mode == "pct":
+                k_eff = max(1, int(np.ceil(pct * n_atoms)))
+            else:
+                raise ValueError("mode doit être 'k' ou 'pct'")
+
+            top_vals = np.sort(values)[::-1][:k_eff]
+            score = top_vals.sum()
+
+            rows.append({
+                "feature": feature,
+                "score": score
+            })
+
+    df = pd.DataFrame(rows).sort_values("score", ascending=False)
+
+    return df
+
+
+
+def plot_importance_across_layers(results_per_layer, n_components=None, n_nonzero=None, cfg=None, keep_only_renamed=True):
+    rename = {
+        "sentence_CLAUSE_subjwho": "Relative clause type",
+        "sentence_RC_attached_peripheral": "Attachment site",
+        "subj_NUM_sg": "Subj. num.",
+        #"subj_GEN_m": "Subj. gender",
+        #"subj_ZIPF": "Subj. freq.",
+        #"obj_NUM_sg": "Obj. num.",
+        #"obj_GEN_m": "Obj. gender",
+        "obj_ZIPF": "Obj. freq.",
+        "embed_NUM_sg": "Embed. num.",
+        #"embed_GEN_m": "Embed. gender",
+        #"embed_ZIPF": "Embed. freq.",
+        #"verb_ZIPF": "Verb freq.",
+    }
+
+    feature_colors = {
+        "Relative clause type": "green",
+        "Attachment site": "orange",
+        "Subj. num.": "royalblue",
+        "Obj. freq.": "red",
+        "Embed. num.": "mediumpurple",
+        "Embed. freq.": "red",
+    }
+
+    # concat
+    all_df = []
+    for layer, df in results_per_layer.items():
+        tmp = df[["feature", "score"]].copy()
+        tmp["layer"] = layer
+        all_df.append(tmp)
+    all_df = pd.concat(all_df, ignore_index=True)
+
+    if keep_only_renamed:
+        all_df = all_df[all_df["feature"].isin(rename.keys())].copy()
+
+    # rename
+    all_df["feature_renamed"] = all_df["feature"].map(lambda x: rename.get(x, x))
+
+    # pivot
+    pivot = all_df.pivot(index="layer", columns="feature_renamed", values="score").sort_index()
+
+    target_order = [v for k, v in rename.items() if v in pivot.columns]
+    pivot = pivot.reindex(columns=target_order)
+    x = pivot.index.values
+
+    plt.rcParams.update({
+        "font.size": 14,
+        "axes.labelsize": 22,
+        "xtick.labelsize": 16,
+        "ytick.labelsize": 16,
+        "legend.fontsize": 18,
+        "axes.linewidth": 3.0,
+        "xtick.major.size": 10,
+        "ytick.major.size": 10,
+        "xtick.major.width": 3.0,
+        "ytick.major.width": 3.0,
+    })
+
+    markers = ["o", "x", "s", "P", "D", "^", "v", "<", ">"]
+    lw = 3.5
+    ms = 9
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 5))
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    for j, col in enumerate(pivot.columns):
+
+        ax.plot(
+            x,
+            pivot[col].values,
+            marker=markers[j % len(markers)],
+            linewidth=lw,
+            markersize=ms,
+            label=col,
+            color=feature_colors.get(col, "black"))
+
+    ax.set_xlabel("Layer")
+    ax.set_ylabel("Feature Importance")
+    ax.set_xticks(x)
+
+
+    ax.legend(title="Feature", loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False)
+
+    plt.title(f"components {n_components}, nonzero {n_nonzero}", fontsize=20)
+    plt.tight_layout()
+
+    save_path = os.path.join(cfg.figures_dir, f"importance_across_layer_C{n_components}_K{n_nonzero}.png")
+    plt.savefig(save_path, dpi=70)
+    plt.show()
+
+def compute_neff(w_m):
+    """
+    Calculates the Effective Number of Atoms (N_eff) based on Hill's entropy of order 2.
+
+    1. Normalization: p_m = w_m / sum(w)
+    2. N_eff = 1 / sum(p_m^2)
+    """
+    w_pos = np.maximum(w_m, 0)
+    sum_w = np.sum(w_pos)
+
+    if sum_w == 0:
+        return 0.0, np.zeros_like(w_pos)
+
+    # Probability distribution p_m
+    p_m = w_pos / sum_w
+
+    # Effective number N_eff
+    n_eff = 1.0 / np.sum(p_m ** 2)
+
+    return n_eff, p_m
+
+
+def roc_auc_plot(n_components, n_nonzero, layer, cfg):
+    data = []
+    log_files = glob.glob(os.path.join(cfg.log_dir, "experiment_log_layer*.jsonl"))
+
+    if not log_files:
+        return
+
+    for filename in log_files:
+        with open(filename, 'r') as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    data.append({
+                        "Layer": entry["layer"],
+                        "Feature": entry["feature"],
+                        "ROC AUC": entry["roc_auc"]
+                    })
+                except: continue
+
+    df = pd.DataFrame(data)
+    df = df.sort_values(by="Layer")
+
+    rename_dict = {
+        "sentence_CLAUSE": "Relative clause type",
+        "sentence_RC_attached": "Attachment site",
+        "subj_NUM": "Subj. num.",
+        "subj_GEN": "Subj. gender",
+        "subj_ZIPF": "Subj. freq.",
+        "obj_NUM": "Obj. num.",
+        "obj_GEN": "Obj. gender",
+        "obj_ZIPF": "Obj. freq.",
+        "embed_NUM": "Embed. num.",
+        "embed_GEN": "Embed. gender",
+        "embed_ZIPF": "Embed. freq.",
+        "verb_ZIPF": "Verb freq."
+    }
+
+    df['Feature Label'] = df['Feature'].map(rename_dict).fillna(df['Feature'])
+
+    def get_category(label):
+        if any(x in label for x in ["Relative", "Attachment"]): return 'Syntax'
+        if "freq." in label: return 'Frequency (Zipf)'
+        if any(x in label for x in ["num.", "gender"]): return 'Morphology'
+        return 'Other'
+
+    df['Category'] = df['Feature Label'].apply(get_category)
+    category_order = ['Syntax', 'Morphology', 'Frequency (Zipf)']
+
+    unique_features = df['Feature Label'].unique()
+    palette = sns.color_palette("bright", len(unique_features))
+    color_map = dict(zip(unique_features, palette))
+
+    sns.set_context("paper", font_scale=1.4)
+    sns.set_style("whitegrid", {'grid.linestyle': ':'})
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5), sharey=True)
+
+    for i, cat in enumerate(category_order):
+        ax = axes[i]
+        df_cat = df[df['Category'] == cat]
+
+        if df_cat.empty:
+            continue
+
+        sns.lineplot(
+            data=df_cat,
+            x="Layer",
+            y="ROC AUC",
+            hue="Feature Label",
+            style="Feature Label",
+            markers=True,
+            dashes=False,
+            linewidth=2.5,
+            palette=color_map,
+            ax=ax
+        )
+
+        ax.axhline(0.5, color='gray', linestyle='--', linewidth=1.5, alpha=0.6)
+        ax.set_ylim(0.45, 1.05)
+        #ax.set_ylim(0, 0.5)
+        ax.set_title(cat, fontweight='bold', size=17, pad=15)
+        ax.set_xlabel("Layer", fontsize=16)
+
+        if i == 0:
+            ax.set_ylabel("Decoding Score (AUC)", fontsize=16)
+        else:
+            ax.set_ylabel("")
+
+        handles, labels = ax.get_legend_handles_labels()
+        num_items = len(labels)
+        num_cols = 2 if num_items > 4 else 1
+
+        ax.legend(
+            handles,
+            labels,
+            loc='upper center',
+            bbox_to_anchor=(0.5, -0.22),
+            ncol=num_cols,
+            fontsize=14,
+            frameon=False,
+            handletextpad=0.5,
+            columnspacing=1.0
+        )
+
+    plt.subplots_adjust(bottom=0.35, wspace=0.05)
+
+    save_path = os.path.join(cfg.figures_dir, f"roc_auc_plot_L{layer}_C{n_components}_K{n_nonzero}.png")
+    plt.savefig(save_path, dpi=70)
+    plt.show()
+
+def p_value_plot(n_components, n_nonzero, layer, cfg):
+    data = []
+    log_files = glob.glob(os.path.join(cfg.log_dir, "experiment_log_layer*.jsonl"))
+
+    if not log_files:
+        return
+
+    for filename in log_files:
+        with open(filename, 'r') as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    data.append({
+                        "Layer": entry["layer"],
+                        "Feature": entry["feature"],
+                        "p-value": entry["p_value"]
+                    })
+                except: continue
+
+    df = pd.DataFrame(data)
+    df = df.sort_values(by="Layer")
+
+    rename_dict = {
+        "sentence_CLAUSE": "Relative clause type",
+        "sentence_RC_attached": "Attachment site",
+        "subj_NUM": "Subj. num.",
+        "subj_GEN": "Subj. gender",
+        "subj_ZIPF": "Subj. freq.",
+        "obj_NUM": "Obj. num.",
+        "obj_GEN": "Obj. gender",
+        "obj_ZIPF": "Obj. freq.",
+        "embed_NUM": "Embed. num.",
+        "embed_GEN": "Embed. gender",
+        "embed_ZIPF": "Embed. freq.",
+        "verb_ZIPF": "Verb freq."
+    }
+
+    df['Feature Label'] = df['Feature'].map(rename_dict).fillna(df['Feature'])
+
+    def get_category(label):
+        if any(x in label for x in ["Relative", "Attachment"]): return 'Syntax'
+        if "freq." in label: return 'Frequency (Zipf)'
+        if any(x in label for x in ["num.", "gender"]): return 'Morphology'
+        return 'Other'
+
+    df['Category'] = df['Feature Label'].apply(get_category)
+    category_order = ['Syntax', 'Morphology', 'Frequency (Zipf)']
+
+    unique_features = df['Feature Label'].unique()
+    palette = sns.color_palette("bright", len(unique_features))
+    color_map = dict(zip(unique_features, palette))
+
+    sns.set_context("paper", font_scale=1.4)
+    sns.set_style("whitegrid", {'grid.linestyle': ':'})
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5), sharey=True)
+
+    for i, cat in enumerate(category_order):
+        ax = axes[i]
+        df_cat = df[df['Category'] == cat]
+
+        if df_cat.empty:
+            continue
+
+        sns.lineplot(
+            data=df_cat,
+            x="Layer",
+            y="p-value",
+            hue="Feature Label",
+            style="Feature Label",
+            markers=True,
+            dashes=False,
+            linewidth=2.5,
+            palette=color_map,
+            ax=ax
+        )
+
+        ax.axhline(0.05, color='gray', linestyle='--', linewidth=1.5, alpha=0.6)
+        #ax.set_ylim(0.45, 1.05)
+        ax.set_ylim(0, 0.3)
+        ax.set_title(cat, fontweight='bold', size=17, pad=15)
+        ax.set_xlabel("Layer", fontsize=16)
+
+        if i == 0:
+            ax.set_ylabel("p-value", fontsize=16)
+        else:
+            ax.set_ylabel("")
+
+        handles, labels = ax.get_legend_handles_labels()
+        num_items = len(labels)
+        num_cols = 2 if num_items > 4 else 1
+
+        ax.legend(
+            handles,
+            labels,
+            loc='upper center',
+            bbox_to_anchor=(0.5, -0.22),
+            ncol=num_cols,
+            fontsize=14,
+            frameon=False,
+            handletextpad=0.5,
+            columnspacing=1.0
+        )
+
+    plt.subplots_adjust(bottom=0.35, wspace=0.05)
+    save_path = os.path.join(cfg.figures_dir, f"p_value_plot_L{layer}_C{n_components}_K{n_nonzero}.png")
+    plt.savefig(save_path, dpi=70)
+    plt.show()
+
+def neff_plot(n_components, n_nonzero, layer, cfg):
+    data = []
+    log_files = glob.glob(os.path.join(cfg.log_dir, "experiment_log_layer*.jsonl"))
+
+    if not log_files:
+        return
+
+    for filename in log_files:
+        with open(filename, 'r') as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+
+
+                    wm_dict = entry.get("permutation_importance", {})
+                    wm_values = np.array(list(wm_dict.values()))
+
+                    w_pos = np.maximum(wm_values, 0)
+                    sum_w = np.sum(w_pos)
+
+                    if sum_w > 0:
+                        p_m = w_pos / sum_w
+                        neff = 1.0 / np.sum(p_m**2)
+                    else:
+                        neff = 1.0
+
+                    data.append({
+                        "Layer": entry["layer"],
+                        "Feature": entry["feature"],
+                        "Neff": neff
+                    })
+                except: continue
+
+    df = pd.DataFrame(data)
+    df = df.sort_values(by="Layer")
+
+    rename_dict = {
+        "sentence_CLAUSE": "Relative clause type",
+        "sentence_RC_attached": "Attachment site",
+        "subj_NUM": "Subj. num.",
+        "subj_GEN": "Subj. gender",
+        "subj_ZIPF": "Subj. freq.",
+        "obj_NUM": "Obj. num.",
+        "obj_GEN": "Obj. gender",
+        "obj_ZIPF": "Obj. freq.",
+        "embed_NUM": "Embed. num.",
+        "embed_GEN": "Embed. gender",
+        "embed_ZIPF": "Embed. freq.",
+        "verb_ZIPF": "Verb freq."
+    }
+
+    df['Feature Label'] = df['Feature'].map(rename_dict).fillna(df['Feature'])
+
+    def get_category(label):
+        if any(x in label for x in ["Relative", "Attachment"]): return 'Syntax'
+        if "freq." in label: return 'Frequency (Zipf)'
+        if any(x in label for x in ["num.", "gender"]): return 'Morphology'
+        return 'Other'
+
+    df['Category'] = df['Feature Label'].apply(get_category)
+    category_order = ['Syntax', 'Morphology', 'Frequency (Zipf)']
+
+    unique_features = df['Feature Label'].unique()
+    palette = sns.color_palette("bright", len(unique_features))
+    color_map = dict(zip(unique_features, palette))
+
+    sns.set_context("paper", font_scale=1.4)
+    sns.set_style("whitegrid", {'grid.linestyle': ':'})
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5), sharey=False)
+
+    for i, cat in enumerate(category_order):
+        ax = axes[i]
+        ax.axhline(1, color='gray', linestyle='--', linewidth=1.5, alpha=0.6)
+
+        df_cat = df[df['Category'] == cat]
+        if df_cat.empty: continue
+
+        sns.lineplot(
+            data=df_cat, x="Layer", y="Neff",
+            hue="Feature Label", style="Feature Label",
+            markers=True, dashes=False, linewidth=2.5,
+            palette=color_map, ax=ax
+        )
+
+        ax.set_title(cat, fontweight='bold', size=17, pad=15)
+        ax.set_xlabel("Layer", fontsize=16)
+        if i == 0:
+            ax.set_ylabel("Neff", fontsize=16)
+        else:
+            ax.set_ylabel("")
+            ax.set_yticklabels([])
+
+        ax.set_ylim(30, -4)
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, -0.22),
+                  ncol=2 if len(labels) > 4 else 1, fontsize=12, frameon=False)
+
+    plt.subplots_adjust(bottom=0.35, wspace=0.05)
+    save_path = os.path.join(cfg.figures_dir, f"neff_L{layer}_C{n_components}_K{n_nonzero}.png")
+    plt.savefig(save_path, dpi=70)
+    plt.show()
+
+
+def load_logs_to_df(log_dir):
+    data = []
+    files = glob.glob(os.path.join(log_dir, "experiment_log_layer*.jsonl"))
+    for f_path in files:
+        with open(f_path, 'r') as f:
+            for line in f:
+                try:
+                    data.append(json.loads(line))
+                except: continue
+    return pd.DataFrame(data)
+
+def compute_significance_matrix(df, feature_name):
+    n_layers = 12
+    df_feat = df[df['feature'] == feature_name].sort_values('layer')
+
+    if len(df_feat) < n_layers:
+        return None, None
+
+    aucs = df_feat['roc_auc'].values
+    p_matrix = np.ones((n_layers, n_layers))
+
+    # [cite_start]Estimation de l'erreur standard (SE) via le bootstrap mentionné dans le PDF [cite: 63, 65]
+    # À défaut de SE individuelle par log, on utilise une SE conservative de 0.015
+    se = 0.015
+
+    for i in range(n_layers):
+        for j in range(n_layers):
+            if i == j: continue
+            diff = aucs[i] - aucs[j]
+            z = diff / np.sqrt(2 * se**2)
+            p_matrix[i, j] = 2 * (1 - norm.cdf(np.abs(z)))
+
+    # [cite_start]Correction FDR (Benjamini-Hochberg) sur la partie triangulaire supérieure [cite: 67]
+    upper_idx = np.triu_indices(n_layers, k=1)
+    _, p_adj, _, _ = multipletests(p_matrix[upper_idx], method='fdr_bh')
+
+    adj_matrix = np.ones((n_layers, n_layers))
+    adj_matrix[upper_idx] = p_adj
+    adj_matrix = adj_matrix + adj_matrix.T - np.diag(np.diag(adj_matrix))
+
+    return adj_matrix, aucs
+
+def plot_layer_comparison_matrix(p_matrix, aucs, feature_name, rename_dict):
+    n_layers = 12
+    clean_name = rename_dict.get(feature_name, feature_name)
+
+    # Matrice de direction : 1 si Row > Col (Significatif), -1 si Row < Col, 0 sinon
+    sig_map = np.zeros((n_layers, n_layers))
+    for i in range(n_layers):
+        for j in range(n_layers):
+            if p_matrix[i, j] < 0.05:
+                sig_map[i, j] = 1 if aucs[i] > aucs[j] else -1
+
+    plt.figure(figsize=(10, 8))
+    cmap = sns.diverging_palette(10, 240, as_cmap=True) # Rouge (-) à Bleu (+)
+
+    ax = sns.heatmap(sig_map, cmap=cmap, center=0, annot=False, cbar=True,
+                xticklabels=range(n_layers), yticklabels=range(n_layers),
+                linewidths=0.5, linecolor='white')
+
+    # Personnalisation de la barre de couleur
+    colorbar = ax.collections[0].colorbar
+    colorbar.set_ticks([-0.66, 0, 0.66])
+    colorbar.set_ticklabels(['Moins bon', 'Stable', 'Meilleur'])
+
+    plt.title(f"Évolution statistique de l'encodage : {clean_name}\n(FDR corrigé, p < 0.05)", fontsize=16)
+    plt.xlabel("Couche de référence (j)")
+    plt.ylabel("Couche comparée (i)")
+    plt.tight_layout()
+    plt.show()
+
+def plot_layer_comparison(cfg):
+
+    rename_dict = {
+        "sentence_CLAUSE": "Relative clause type",
+        "sentence_RC_attached": "Attachment site",
+        "subj_NUM": "Subj. num.",
+        "subj_GEN": "Subj. gender",
+        "subj_ZIPF": "Subj. freq.",
+        "obj_NUM": "Obj. num.",
+        "obj_GEN": "Obj. gender",
+        "obj_ZIPF": "Obj. freq.",
+        "embed_NUM": "Embed. num.",
+        "embed_GEN": "Embed. gender",
+        "embed_ZIPF": "Embed. freq.",
+        "verb_ZIPF": "Verb freq."
+    }
+
+    df_logs = load_logs_to_df(cfg.log_dir)
+    features_to_plot = df_logs['feature'].unique()
+
+    for feat in features_to_plot:
+        p_mat, auc_vals = compute_significance_matrix(df_logs, feat)
+        if p_mat is not None:
+            plot_layer_comparison_matrix(p_mat, auc_vals, feat, rename_dict)

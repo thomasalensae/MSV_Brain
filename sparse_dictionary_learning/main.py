@@ -1,47 +1,67 @@
 import utils.import_dataset as dataset
 import bert_embeddings
-import utils.config as config
+from utils.config import cfg
 import results
 from sparse_dictionary import fit_sdl
+import os
+
+def run_experiment():
+    print(f"--- Starting Analysis: {cfg.dataset_name} ---")
+
+    # Hyperparameters
+    n_nonzero_list = [10]
+    components_list = [64] #, 64, 128, 256, 512, 1024, 2048]
+    layers_to_process = range(12)
+
+    # Load dataset
+    df, X = dataset.load()
+
+    # Compute BERT embeddings
+    Y_layers = bert_embeddings.compute_embeddings(df, cfg)
+
+    for n_nonzero in n_nonzero_list:
+        for n_components in components_list:
+
+            importance_per_layer = {}
 
 
+            for layer in layers_to_process:
+                print(f"\n>>> Processing Layer {layer} | Components {n_components} | Non-zero {n_nonzero_list} <<<")
 
-print("Starting ...")
+                # Sparse Dictionary Learning and Probing
+                fit_sdl(Y_layers[layer], X, n_components=n_components, n_nonzero=n_nonzero, layer=layer, cfg=cfg)
 
-# Parameters
-n_components=2048
-n_nonzero=10
+                log_path = os.path.join(cfg.log_dir, f"experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
 
-# Load dataset
-df, X = dataset.load()
+                if os.path.exists(log_path):
 
-# BERT embeddings
-Y_layers = bert_embeddings.compute_embeddings(df, config.cfg)
+                    print("a")
+                    # Compute importance per feature
+                    #importante_df = results.aggregate_importance(log_path, n_components=n_components, n_nonzero=n_nonzero, layer=layer, cfg=cfg, mode="pct", k=5, pct=0.05)
+                    #importance_per_layer[layer] = importante_df
 
-#for layer in [0,1,2,3,4,5,6,7,8,9,10,11]:
+                    # Plot Selectivity Matrix (Atoms vs Features)
+                    matrix = results.plot_selectivity_matrix(log_path, n_components=n_components, n_nonzero=n_nonzero, layer=layer, cfg=cfg)
 
-for n_components in [64, 128, 256, 512, 1024, 2048]:
-    for layer in [0]:
-        print("Processing layer:", layer)
+                    # Plot Hierarchical Heatmap based on feature correlations
+                    #results.plot_hierarchy_heatmap(matrix, n_components=n_components, n_nonzero=n_nonzero, layer=layer, cfg=cfg)
 
-        Y_layer = Y_layers[layer]
+                    # Plot Identifiability Score distribution
+                    #results.plot_identifiability_distribution(log_path, n_components=n_components, n_nonzero=n_nonzero, layer=layer, cfg=cfg)
 
-        # Fit SDL and probe features
-        #fit_sdl(Y_layer, X, n_components=n_components, n_nonzero=n_nonzero, layer = layer)
+                    # Detailed analysis for specific features or stimuli
+                    #results.summarize_feature_probing("animal", log_path=log_path)
+                    #results.get_top_stimuli_for_atoms(df, n_components, n_nonzero, layer, cfg, atom_indices=[417, 472])
 
-        # Plot results
-        #results.summarize_feature_probing("sentence_CLAUSE_objwho", log_path=f"sparse_dictionary_learning/cache_categ_1/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
-        #results.plot_atom_importance("sentence_CLAUSE_objwho", log_path=f"sparse_dictionary_learning/cache_categ_1/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl")
-        #top_examples = results.get_top_stimuli_for_atoms(df, n_components=n_components, n_nonzero=n_nonzero, layer = layer, atom_indices=[417, 472])
+            #results.plot_importance_across_layers(importance_per_layer, n_components=n_components, n_nonzero=n_nonzero, cfg=cfg)
 
-        matrix = results.plot_selectivity_matrix(f"/Users/maxime/MSV_Brain/sparse_dictionary_learning/cache/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl", n_components=n_components, n_nonzero=n_nonzero, layer = layer)
+    print("\n--- Generating global layer-wise identifiability plot ---")
+    #results.plot_identifiability(n_layers=len(layers_to_process), n_components=2048, n_nonzero=10, cfg=cfg)
+    #results.roc_auc_plot(n_components=n_components, n_nonzero=n_nonzero, layer=layer, cfg = cfg)
+    #results.p_value_plot(n_components=n_components, n_nonzero=n_nonzero, layer=layer, cfg = cfg)
+    #results.neff_plot(n_components=n_components, n_nonzero=n_nonzero, layer=layer, cfg = cfg)
+    #results.plot_layer_comparison(cfg)
+    print("\nDone. All figures are saved in:", cfg.figures_dir)
 
-        #df_corr = results.analyze_hierarchical_correlation(matrix)
-        #print(df_corr)
-        results.plot_hierarchy_heatmap(matrix, n_components=n_components, n_nonzero=n_nonzero, layer = layer)
-
-        # Criteria of identifiability
-        #results.plot_identifiability_distribution(log_path=f"/Users/maxime/MSV_Brain/sparse_dictionary_learning/cache_categ_1/log/experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}.jsonl", n_components=n_components, n_nonzero=n_nonzero, layer = layer)
-
-#results.plot_identifiability(12, n_components,n_nonzero)
-print("Done.")
+if __name__ == "__main__":
+    run_experiment()

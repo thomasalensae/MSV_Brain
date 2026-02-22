@@ -4,8 +4,9 @@ import pandas as pd
 from sparse_dictionary_learning.utils.config import cfg
 import torch
 
+from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder
-
+from sklearn.pipeline import Pipeline
 
 def set_global_seeds(seed):
     """Set seeds for reproducibility."""
@@ -26,7 +27,6 @@ def stratified_sample(df, by: str, n_total, seed = 42) -> pd.DataFrame:
     groups = df.groupby(by, group_keys=False)
     sizes = (groups.size() / len(df) * n_total).round().astype(int) # number of examples to keep per group
 
-    # Random draw within each group
     sampled_parts = []
     for k, g in groups:
         take = int(sizes.loc[k])
@@ -41,7 +41,7 @@ def stratified_sample(df, by: str, n_total, seed = 42) -> pd.DataFrame:
     return out
 
 def build_X_from_df(df: pd.DataFrame, sentence_col: str) -> pd.DataFrame:
-    """Build the X matrix for MLEM, excluding the sentence column and casting object columns to categorical"""
+    """Build the X matrix, excluding the sentence column and casting object columns to categorical"""
     if sentence_col not in df.columns:
         raise ValueError(f"Missing sentence column: {sentence_col}")
 
@@ -71,27 +71,56 @@ def load():
         )
 
     # Subsampling (not needed if dataset is small enough)
-    df = stratified_sample(df, by=cfg.stratify_col, n_total=cfg.n_max, seed=cfg.random_seed)
-    print("After subsample shape:", df.shape)
-    print(df[cfg.stratify_col].value_counts())
+    #df = stratified_sample(df, by=cfg.stratify_col, n_total=cfg.n_max, seed=cfg.random_seed)
+    #print("After subsample shape:", df.shape)
+    #print(df[cfg.stratify_col].value_counts())
 
 
-    # Build X (remove text column, cast object columns to categorical)
     X = build_X_from_df(df, sentence_col=cfg.sentence_col)
-    print("X shape:", X.shape)
 
-    X = pd.get_dummies(X)
-    encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-    X_enc = encoder.fit_transform(X)
+    zipf_cols = [c for c in X.columns if "ZIPF" in c]
+    other_cols = [c for c in X.columns if c not in zipf_cols]
 
-    feature_names = encoder.get_feature_names_out(X.columns)
-    keep_indices = [i for i, name in enumerate(feature_names) if "False" not in name]
-    X_filtered = X_enc[:, keep_indices]
-    names_filtered = feature_names[keep_indices]
-    new_feature_names = np.array([name.replace("_True", "") for name in names_filtered])
-    print("Features: \n" + new_feature_names.tolist().__str__())
+    categ_cols = X[other_cols].select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+    numeric_nonzipf_cols = [c for c in other_cols if c not in categ_cols]
 
-    X_ohe = pd.DataFrame(X_filtered, columns=new_feature_names, index=X.index)
+    if len(zipf_cols) > 0:
+        X[zipf_cols] = X[zipf_cols].apply(pd.to_numeric, errors="coerce").fillna(0)
 
-    return df, X
+        for col in zipf_cols:
+            if col != "verb_ZIPF":
+                X[col] = X[col].round().astype(int)
+
+    all_categ_cols = categ_cols + zipf_cols
+
+    # Utilisation de drop="first" pour éviter d'avoir les colonnes inverses
+    ohe = OneHotEncoder(
+        sparse_output=False,
+        handle_unknown="ignore",
+        drop="first"
+    )
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("cat_and_zipf", ohe, all_categ_cols),
+            ("num", "passthrough", numeric_nonzipf_cols),
+        ],
+        remainder="drop",
+        verbose_feature_names_out=False
+    )
+
+    Xt = preprocessor.fit_transform(X)
+    feature_names = preprocessor.get_feature_names_out()
+    X_final = pd.DataFrame(Xt, columns=feature_names, index=X.index)
+    cleaned_columns = [c.rpartition('_')[0] if '_' in c else c for c in X_final.columns]
+    X_final.columns = cleaned_columns
+    print(f"ZIPF passthrough: {zipf_cols}")
+    print(f"Categorical OHE: {categ_cols}")
+
+    if len(numeric_nonzipf_cols) > 0:
+        print(f"Other numeric passthrough: {numeric_nonzipf_cols}")
+    print("Final features:", X_final.shape[1])
+
+    return df, X_final
+
 

@@ -32,7 +32,9 @@ class Config:
         self.embeddings_cache.mkdir(parents=True, exist_ok=True)
 
         self.log_dir = self.base_cache_dir / "log"
+        self.log_dir_cv = self.base_cache_dir / "log_cv"
         self.z_cache = self.base_cache_dir / "Z_cache"
+        self.z_cache_cv = self.base_cache_dir / "Z_cache_cv"
         self.dict_cache = self.base_cache_dir / "sparse_dictionaries_cache"
 
         self.figures_dir = BASE_DIR / "figures" / f"figures_{self.dataset_name}"

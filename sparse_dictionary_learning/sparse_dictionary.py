@@ -5,7 +5,8 @@ import json
 from datetime import datetime
 import time
 import os
-
+from sklearn.model_selection import KFold
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import MiniBatchDictionaryLearning
 from sklearn.model_selection import train_test_split
@@ -32,13 +33,92 @@ def setup_custom_logger(log_file):
     logger.addHandler(handler)
     return logger
 
-def is_binary(y):
-    y = np.asarray(y)
-    y = y[~np.isnan(y)]
-    uniq = np.unique(y)
-    return len(uniq) == 2 and set(uniq).issubset({0, 1})
+def fit_sdl_cv(Y_layer, X, n_components, n_nonzero, layer, cfg, n_splits=5, random_state=42, n_rep=20):
 
-def fit_sdl(Y_layer, X, n_components, n_nonzero, layer, cfg, test_size=0.2, random_state=42, top_k_atoms=30, n_perm_repeats=10, n_bootstraps=50):
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+    scaler = StandardScaler()
+    Y_std = scaler.fit_transform(Y_layer)
+
+    for fold, (train_idx, test_idx) in enumerate(kf.split(Y_std)):
+        print(f"\n>>> Fold {fold} <<<")
+        start_time_fold = time.time()
+
+        log_path = os.path.join(cfg.log_dir_cv, f"experiment_log_layer{layer}_ncomp{n_components}_nnonzero{n_nonzero}_fold{fold}.jsonl")
+        z_train_path = os.path.join(cfg.z_cache_cv, f"Z_train_L{layer}_C{n_components}_K{n_nonzero}_fold{fold}.npy")
+        z_test_path = os.path.join(cfg.z_cache_cv, f"Z_test_L{layer}_C{n_components}_K{n_nonzero}_fold{fold}.npy")
+
+        if os.path.exists(log_path):
+            continue
+
+        if os.path.exists(z_train_path) and os.path.exists(z_test_path):
+            print(f"Loading cached Z codes for fold {fold}")
+            Z_train = np.load(z_train_path)
+            Z_test = np.load(z_test_path)
+        else:
+            print(f"Learning dictionary for fold {fold} on {len(train_idx)} samples...")
+            start_time_dict = time.time()
+            dict_learner = MiniBatchDictionaryLearning(
+                n_components=n_components,
+                transform_algorithm="omp",
+                transform_n_nonzero_coefs=n_nonzero,
+                batch_size=256,
+                random_state=random_state
+            )
+
+            Z_train = dict_learner.fit_transform(Y_std[train_idx])
+            Z_test = dict_learner.transform(Y_std[test_idx])
+
+            np.save(z_train_path, Z_train)
+            np.save(z_test_path, Z_test)
+            print(f"Time SDL Fold {fold}: {time.time() - start_time_dict:.2f}s")
+
+        for i, feature_name in enumerate(X.columns):
+            start_time_feature = time.time()
+
+            y_train = X.iloc[train_idx, i].values
+            y_test = X.iloc[test_idx, i].values
+
+            clf = LogisticRegression(
+                penalty="l1",
+                solver="saga",
+                max_iter=5000,
+                C=1.0,
+                n_jobs=-1,
+                random_state=random_state
+            )
+            clf.fit(Z_train, y_train)
+
+            y_pred = clf.predict(Z_test)
+            coefs = clf.coef_.ravel()
+
+            auc_hat = float(roc_auc_score(y_test, y_pred))
+
+            w_m = compute_atom_importance_manual(clf, Z_test, y_test, random_state, n_rep)
+
+            p_value = compute_feature_pvalue(y_test, y_pred, auc_hat, n_repeats=n_rep, random_state=random_state)
+
+            all_importances = {int(a): float(w_m[a]) for a in range(len(w_m))}
+            all_coefs = {int(a): float(coefs[a]) for a in range(len(coefs))}
+
+            log_entry = {
+                "feature": feature_name,
+                "layer": layer,
+                "n_components": n_components,
+                "n_nonzero": n_nonzero,
+                "roc_auc": auc_hat,
+                "p_value": p_value,
+                "permutation_importance": all_importances,
+                "coef": all_coefs,
+                "timestamp": datetime.now().isoformat()
+            }
+
+            with open(log_path, 'a') as f:
+                f.write(json.dumps(log_entry) + "\n")
+
+        print(f"Total time fold {fold}: {time.time() - start_time_fold:.2f}s")
+
+def fit_sdl(Y_layer, X, n_components, n_nonzero, layer, cfg, test_size=0.2, random_state=42, top_k_atoms=30, n_perm_repeats=20, n_bootstraps=20):
     """
     Fits Sparse Dictionary Learning
     """
@@ -64,7 +144,7 @@ def fit_sdl(Y_layer, X, n_components, n_nonzero, layer, cfg, test_size=0.2, rand
             n_components=n_components,
             transform_algorithm="omp",
             transform_n_nonzero_coefs=n_nonzero,
-            batch_size=256,
+            batch_size=512,
             random_state=random_state
         )
         Z = dict_learner.fit_transform(Y_std)
@@ -105,27 +185,22 @@ def fit_sdl(Y_layer, X, n_components, n_nonzero, layer, cfg, test_size=0.2, rand
 
         # w_m importances via permutation
         w_m = compute_atom_importance_manual(clf, Z_test, y_test, random_state, 100)
-
         p_value = compute_feature_pvalue(y_test, y_pred, auc_hat, n_repeats=100, random_state=random_state)
 
-        # Identify Top Atoms (based on permutation)
-        top_atoms_indices = np.argsort(w_m)[::-1][:top_k_atoms]
+        all_importances = {int(a): float(w_m[a]) for a in range(len(w_m))}
+        all_coefs = {int(a): float(coefs[a]) for a in range(len(coefs))}
 
         log_entry = {
-            "feature": feature_name,
-            "timestamp": datetime.now().isoformat(),
-            "layer": layer,
-            "n_components": n_components,
-            "n_nonzero": n_nonzero,
-
-            "roc_auc": auc_hat,
-            "p_value": p_value,
-
-            "top_atoms": top_atoms_indices.tolist(),
-            "permutation_importance": {int(a): float(w_m[a]) for a in top_atoms_indices},
-        }
-
-        print(f"  AUC: {auc_hat:.3f} | Time: {time.time() - start_time:.2f}s")
+                "feature": feature_name,
+                "layer": layer,
+                "n_components": n_components,
+                "n_nonzero": n_nonzero,
+                "roc_auc": auc_hat,
+                "p_value": p_value,
+                "permutation_importance": all_importances,
+                "coef": all_coefs,
+                "timestamp": datetime.now().isoformat()
+            }
 
         with open(log_path, 'a') as f:
             f.write(json.dumps(log_entry) + "\n")
@@ -191,25 +266,4 @@ def compute_feature_pvalue(y_true, y_score, score_observed, n_repeats=100, rando
     p_value = (n_greater + 1) / (n_repeats + 1)
 
     return p_value
-
-def compute_neff(w_m):
-    """
-    Calculates the Effective Number of Atoms (N_eff) based on Hill's entropy of order 2.
-
-    1. Normalization: p_m = w_m / sum(w)
-    2. N_eff = 1 / sum(p_m^2)
-    """
-    w_pos = np.maximum(w_m, 0)
-    sum_w = np.sum(w_pos)
-
-    if sum_w == 0:
-        return 0.0, np.zeros_like(w_pos)
-
-    # Probability distribution p_m
-    p_m = w_pos / sum_w
-
-    # Effective number N_eff
-    n_eff = 1.0 / np.sum(p_m ** 2)
-
-    return n_eff, p_m
 
